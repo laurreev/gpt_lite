@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'providers/chat_provider.dart';
+import 'screens/chat_screen.dart';
 
 void main() {
   runApp(const MainApp());
@@ -6,14 +9,18 @@ void main() {
 
 class MainApp extends StatelessWidget {
   const MainApp({super.key});
-
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
-      home: Scaffold(
-        body: Center(
-          child: Text('Hello World!'),
+    return ChangeNotifierProvider(
+      create: (context) => ChatProvider(),
+      child: MaterialApp(
+        title: 'GPT Lite',
+        theme: ThemeData(
+          primarySwatch: Colors.blue,
+          useMaterial3: true,
         ),
+        home: const ChatScreen(),
+        debugShowCheckedModeBanner: false,
       ),
     );
   }

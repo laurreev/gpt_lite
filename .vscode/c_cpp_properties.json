@@ -1,0 +1,32 @@
+{
+    "configurations": [
+        {
+            "name": "Android",            "includePath": [
+                "${workspaceFolder}/android/app/src/main/cpp/**",
+                "${workspaceFolder}/android/app/src/main/cpp/llama_cpp/**",
+                "${workspaceFolder}/android/app/src/main/cpp/ggml/**",
+                "${workspaceFolder}/llama.cpp/include/**",
+                "${workspaceFolder}/llama.cpp/ggml/include/**",
+                "${workspaceFolder}/llama.cpp/ggml/src/**",
+                "C:/Users/exypn/AppData/Local/Android/sdk/ndk/27.0.12077973/sysroot/usr/include/**",
+                "C:/Users/exypn/AppData/Local/Android/sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/windows-x86_64/sysroot/usr/include/**",
+                "C:/Users/exypn/AppData/Local/Android/sdk/ndk/27.0.12077973/sources/android/native_app_glue/**"
+            ],
+            "defines": [
+                "ANDROID",
+                "__ANDROID__",
+                "GGML_USE_CALL_LOCAL",
+                "GGML_CPU_ONLY"
+            ],
+            "compilerPath": "C:/Users/exypn/AppData/Local/Android/sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/windows-x86_64/bin/clang++.exe",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "clang-x64",
+            "compilerArgs": [
+                "-target", "aarch64-linux-android21",
+                "-fPIC"
+            ]
+        }
+    ],
+    "version": 4
+}

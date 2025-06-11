@@ -1,0 +1,70 @@
+cmake_minimum_required(VERSION 3.4.1)
+
+project(llama_cpp_flutter)
+
+# Set C++ standard
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_C_STANDARD 11)
+
+# Add compile definitions for CPU-only build
+add_definitions(-DGGML_USE_CALL_LOCAL)
+add_definitions(-DGGML_CPU_ONLY)
+
+# Include directories
+include_directories(
+    llama_cpp/
+    ggml/include/
+    ggml/src/
+    ggml/src/ggml-cpu/
+)
+
+# Core GGML source files (CPU only)
+set(GGML_SOURCES
+    ggml/src/ggml.c
+    ggml/src/ggml-alloc.c
+    ggml/src/ggml-backend.cpp
+    ggml/src/ggml-threading.cpp
+    ggml/src/ggml-quants.c
+    ggml/src/ggml-opt.cpp
+    ggml/src/ggml-cpu/ggml-cpu.cpp
+    ggml/src/ggml-cpu/ggml-cpu.c
+)
+
+# Llama.cpp source files
+set(LLAMA_SOURCES
+    llama_cpp/llama.cpp
+    llama_bridge.cpp
+)
+
+# Create the library
+add_library(llama_cpp_flutter SHARED 
+    ${GGML_SOURCES}
+    ${LLAMA_SOURCES}
+)
+
+# Link libraries
+target_link_libraries(llama_cpp_flutter
+    android
+    log
+)
+
+# Compiler flags for optimization
+target_compile_options(llama_cpp_flutter PRIVATE
+    -O3
+    -DNDEBUG
+    -ffast-math
+    -funroll-loops
+)
+
+# Platform-specific optimizations
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    target_compile_options(llama_cpp_flutter PRIVATE
+        -mcpu=generic
+        -mtune=generic
+    )
+elseif(ANDROID_ABI STREQUAL "armeabi-v7a")
+    target_compile_options(llama_cpp_flutter PRIVATE
+        -mfpu=neon
+        -mfloat-abi=hard
+    )
+endif()

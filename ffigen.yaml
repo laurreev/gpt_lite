@@ -1,0 +1,15 @@
+name: LlamaCppBindings
+description: FFI bindings for llama.cpp
+output: 'lib/llama_cpp_bindings.dart'
+headers:
+  entry-points:
+    - 'android/app/src/main/cpp/llama.h'
+  include-directives:
+    - 'android/app/src/main/cpp/llama.h'
+preamble: |
+  // ignore_for_file: always_specify_types
+  // ignore_for_file: camel_case_types
+  // ignore_for_file: non_constant_identifier_names
+comments:
+  style: any
+  length: full
