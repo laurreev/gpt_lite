@@ -115,17 +115,17 @@ class _ModelSelectionScreenState extends State<ModelSelectionScreen>
               Colors.white,
             ],
           ),
-        ),
-        child: SafeArea(
+        ),        child: SafeArea(
           child: FadeTransition(
             opacity: _fadeAnimation,
             child: SlideTransition(
-              position: _slideAnimation,
-              child: Padding(
-                padding: const EdgeInsets.all(32),
+              position: _slideAnimation,              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
                 child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
+                  mainAxisAlignment: MainAxisAlignment.start,
                   children: [
+                    // Add responsive top spacing
+                    SizedBox(height: MediaQuery.of(context).size.height * 0.02),
                     // App icon and title
                     Hero(
                       tag: 'app_icon',
@@ -156,9 +156,7 @@ class _ModelSelectionScreenState extends State<ModelSelectionScreen>
                           color: Colors.white,
                         ),
                       ),                    ),
-                    
-                    const SizedBox(height: 16),
-                      const SizedBox(height: 32),
+                      const SizedBox(height: 12),
                     
                     // Title
                     const Text(
@@ -204,7 +202,7 @@ class _ModelSelectionScreenState extends State<ModelSelectionScreen>
                       ),
                     ),
                     
-                    const SizedBox(height: 48),
+                    const SizedBox(height: 32),
                     
                     // Description
                     Container(
@@ -228,7 +226,7 @@ class _ModelSelectionScreenState extends State<ModelSelectionScreen>
                             size: 28,
                           ),
                           const SizedBox(height: 12),                          const Text(
-                            'Select a GGUF model file to get started with offline AI conversations.\n\nNote: Models up to 1GB are supported.',
+                            'Select a GGUF model file to get started with offline AI conversations.\n\nRecommended: Phi-2 Q4_K_M for optimal performance.\nSupports models up to 2GB.',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               fontSize: 16,
@@ -274,7 +272,7 @@ class _ModelSelectionScreenState extends State<ModelSelectionScreen>
                       ),
                     ),
                     
-                    const SizedBox(height: 40),
+                    const SizedBox(height: 24),
                     
                     // Main load button
                     SizedBox(
@@ -298,10 +296,9 @@ class _ModelSelectionScreenState extends State<ModelSelectionScreen>
                           ),
                           elevation: 8,
                           shadowColor: Theme.of(context).primaryColor.withOpacity(0.4),
-                        ),
-                      ),
+                        ),                      ),
                     ),                    
-                    const SizedBox(height: 32),
+                    const SizedBox(height: 20),
                       // Supported formats and recommendations
                     Container(
                       padding: const EdgeInsets.all(16),
@@ -331,16 +328,18 @@ class _ModelSelectionScreenState extends State<ModelSelectionScreen>
                             ],
                           ),
                           const SizedBox(height: 8),                          Text(
-                            'Recommended: TinyLlama, Phi-2, or other <1GB models',
+                            'Optimized for Phi-2 Q4_K_M (~1.8GB) and similar models',
                             style: TextStyle(
                               fontSize: 12,
                               color: Colors.grey[500],
                             ),
                             textAlign: TextAlign.center,
-                          ),
-                        ],
+                          ),                        ],
                       ),
                     ),
+                    
+                    // Add bottom spacing to ensure content doesn't get cut off
+                    SizedBox(height: MediaQuery.of(context).size.height * 0.05),
                   ],
                 ),
               ),

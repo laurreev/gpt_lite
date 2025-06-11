@@ -100,10 +100,9 @@ class _ModelLoadingScreenState extends State<ModelLoadingScreen>
         }
       }    } catch (e) {
       if (mounted) {
-        String errorMessage = 'Error loading model: ${e.toString()}';
-          // Clean up the error message for better user experience
+        String errorMessage = 'Error loading model: ${e.toString()}';        // Clean up the error message for better user experience
         if (e.toString().contains('Model file is too large')) {
-          errorMessage = 'Model file is too large (max 1GB).\n\nThis is unusual - most GGUF models should work.\nPlease check if the file is corrupted.';
+          errorMessage = 'Model file is too large (max 2GB).\n\nThis is unusual - most GGUF models should work.\nPlease check if the file is corrupted.';
         } else if (e.toString().contains('Cannot access model file')) {
           errorMessage = 'Cannot access the selected file.\n\nPlease check file permissions and try again.';
         } else if (e.toString().contains('Invalid model format')) {

@@ -1225,9 +1225,8 @@ Java_com_example_gpt_1lite_LlamaCppPlugin_loadModel(JNIEnv *env, jobject /* this
             env->ReleaseStringUTFChars(model_path, path);
             return 0;
         }
-        
-        // Check if we have enough memory for this model
-        const size_t MAX_MODEL_SIZE = 1024 * 1024 * 1024; // 1GB limit for practical models
+          // Check if we have enough memory for this model
+        const size_t MAX_MODEL_SIZE = 2048 * 1024 * 1024; // 2GB limit to accommodate Phi-2 and similar models
         if (model->file_size > MAX_MODEL_SIZE) {
             LOGE("Model file too large: %zu bytes > %zu bytes", model->file_size, MAX_MODEL_SIZE);
             delete model;
