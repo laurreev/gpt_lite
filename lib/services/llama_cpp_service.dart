@@ -78,6 +78,82 @@ class LlamaCppService {
     }
   }
   
+  Future<bool> startStreaming(String prompt, {int maxTokens = 20}) async {
+    if (_contextId == null) return false;
+    
+    try {
+      final result = await _channel.invokeMethod('startStreaming', {
+        'contextId': _contextId,
+        'inputText': prompt,
+        'maxTokens': maxTokens,
+      });
+      
+      return result == true;
+    } catch (e) {
+      print('Error starting streaming: $e');
+      return false;
+    }
+  }
+  
+  Future<String> getNextStreamingToken() async {
+    if (_contextId == null) return '';
+    
+    try {
+      final result = await _channel.invokeMethod('getNextStreamingToken', {
+        'contextId': _contextId,
+      });
+      
+      return result?.toString() ?? '';
+    } catch (e) {
+      print('Error getting next streaming token: $e');
+      return '';
+    }
+  }
+  
+  Future<bool> isStreamingComplete() async {
+    if (_contextId == null) return true;
+    
+    try {
+      final result = await _channel.invokeMethod('isStreamingComplete', {
+        'contextId': _contextId,
+      });
+      
+      return result == true;
+    } catch (e) {
+      print('Error checking streaming completion: $e');
+      return true;
+    }
+  }
+  
+  Future<void> stopStreaming() async {
+    if (_contextId == null) return;
+    
+    try {
+      await _channel.invokeMethod('stopStreaming', {
+        'contextId': _contextId,
+      });
+    } catch (e) {
+      print('Error stopping streaming: $e');
+    }
+  }
+  
+  Stream<String> generateTextStream(String prompt, {int maxTokens = 20}) async* {
+    if (!await startStreaming(prompt, maxTokens: maxTokens)) {
+      yield 'Error: Failed to start streaming';
+      return;
+    }
+    
+    while (!(await isStreamingComplete())) {
+      final token = await getNextStreamingToken();
+      if (token.isNotEmpty && token != '<unk>') {
+        yield token;
+      }
+      
+      // Small delay to prevent overwhelming the UI
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+  }
+  
   Future<void> dispose() async {
     if (_contextId != null) {
       try {

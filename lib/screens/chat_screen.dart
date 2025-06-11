@@ -121,9 +121,20 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('GPT Lite'),
+    return Scaffold(      appBar: AppBar(
+        title: Consumer<ChatProvider>(
+          builder: (context, chatProvider, child) {
+            String title = 'GPT Lite';
+            if (chatProvider.isStreaming) {
+              title += ' • Streaming...';
+            } else if (chatProvider.isModelLoaded) {
+              title += ' • Ready';
+            } else if (chatProvider.isInitializing) {
+              title += ' • Loading...';
+            }
+            return Text(title);
+          },
+        ),
         backgroundColor: Theme.of(context).primaryColor,
         foregroundColor: Colors.white,
         actions: [
@@ -342,14 +353,24 @@ class _ChatScreenState extends State<ChatScreen> {
               onSubmitted: (_) => _sendMessage(chatProvider),
             ),
           ),
-          const SizedBox(width: 8),
-          IconButton(
-            onPressed: chatProvider.isModelLoaded 
+          const SizedBox(width: 8),          IconButton(
+            onPressed: (chatProvider.isModelLoaded && !chatProvider.isStreaming)
                 ? () => _sendMessage(chatProvider) 
                 : null,
-            icon: const Icon(Icons.send),
+            icon: chatProvider.isStreaming 
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                  )
+                : const Icon(Icons.send),
             style: IconButton.styleFrom(
-              backgroundColor: Theme.of(context).primaryColor,
+              backgroundColor: (chatProvider.isModelLoaded && !chatProvider.isStreaming)
+                  ? Theme.of(context).primaryColor
+                  : Colors.grey,
               foregroundColor: Colors.white,
             ),
           ),

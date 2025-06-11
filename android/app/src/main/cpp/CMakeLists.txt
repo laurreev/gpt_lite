@@ -18,7 +18,7 @@ include_directories(
     ggml/src/ggml-cpu/
 )
 
-# Core GGML source files (CPU only) - Phase 2 with tensor support
+# Core GGML source files (CPU only) - Phase 3 with full tensor operations
 set(GGML_SOURCES
     ggml/src/ggml.c
     ggml/src/ggml-alloc.c
@@ -28,9 +28,9 @@ set(GGML_SOURCES
     ggml/src/gguf.cpp
 )
 
-# Llama.cpp source files - Phase 2 with real tensor loading (simplified)
+# Llama.cpp source files - Phase 3 with real tensor data and neural network
 set(LLAMA_SOURCES
-    llama_bridge_phase2_simple.cpp
+    llama_bridge_phase3_real.cpp
 )
 
 # Create the library

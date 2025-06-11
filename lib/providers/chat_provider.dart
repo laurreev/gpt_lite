@@ -2,16 +2,17 @@ import 'package:flutter/foundation.dart';
 import '../models/chat_message.dart';
 import '../services/llama_cpp_service.dart';
 
-class ChatProvider extends ChangeNotifier {
-  final LlamaCppService _llamaService = LlamaCppService();
+class ChatProvider extends ChangeNotifier {  final LlamaCppService _llamaService = LlamaCppService();
   final List<ChatMessage> _messages = [];
   bool _isModelLoaded = false;
   bool _isInitializing = false;
+  bool _isStreaming = false;
   String _modelPath = '';
 
   List<ChatMessage> get messages => List.unmodifiable(_messages);
   bool get isModelLoaded => _isModelLoaded;
   bool get isInitializing => _isInitializing;
+  bool get isStreaming => _isStreaming;
   String get modelPath => _modelPath;
 
   Future<bool> initializeModel(String modelPath) async {
@@ -58,8 +59,96 @@ class ChatProvider extends ChangeNotifier {
       return false;
     }
   }
-
   Future<void> sendMessage(String text) async {
+    if (!_isModelLoaded || text.trim().isEmpty || _isStreaming) return;
+
+    // Add user message
+    final userMessage = ChatMessage(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      text: text.trim(),
+      isUser: true,
+      timestamp: DateTime.now(),
+    );
+    _addMessage(userMessage);
+
+    // Start streaming response
+    await _sendMessageStreaming(text.trim());
+  }
+
+  Future<void> _sendMessageStreaming(String text) async {
+    _isStreaming = true;
+    notifyListeners();
+
+    // Create AI message placeholder
+    final aiMessageId = DateTime.now().millisecondsSinceEpoch.toString();
+    final aiMessage = ChatMessage(
+      id: aiMessageId,
+      text: '',
+      isUser: false,
+      timestamp: DateTime.now(),
+    );
+    _addMessage(aiMessage);
+
+    try {
+      String fullResponse = '';
+      bool isFirstToken = true;
+
+      await for (final token in _llamaService.generateTextStream(text, maxTokens: 50)) {
+        if (token.isNotEmpty && token != '<unk>') {
+          if (isFirstToken) {
+            fullResponse = token;
+            isFirstToken = false;
+          } else {
+            fullResponse += ' $token';
+          }
+
+          // Update the AI message with the accumulated response
+          final messageIndex = _messages.indexWhere((msg) => msg.id == aiMessageId);
+          if (messageIndex != -1) {
+            _messages[messageIndex] = ChatMessage(
+              id: aiMessageId,
+              text: fullResponse,
+              isUser: false,
+              timestamp: aiMessage.timestamp,
+            );
+            notifyListeners();
+          }
+        }
+      }
+
+      // Ensure we have some response
+      if (fullResponse.isEmpty) {
+        final messageIndex = _messages.indexWhere((msg) => msg.id == aiMessageId);
+        if (messageIndex != -1) {
+          _messages[messageIndex] = ChatMessage(
+            id: aiMessageId,
+            text: 'Sorry, I couldn\'t generate a response.',
+            isUser: false,
+            timestamp: aiMessage.timestamp,
+          );
+          notifyListeners();
+        }
+      }
+
+    } catch (e) {
+      // Update message with error
+      final messageIndex = _messages.indexWhere((msg) => msg.id == aiMessageId);
+      if (messageIndex != -1) {
+        _messages[messageIndex] = ChatMessage(
+          id: aiMessageId,
+          text: 'Sorry, there was an error generating a response.',
+          isUser: false,
+          timestamp: aiMessage.timestamp,
+        );
+        notifyListeners();
+      }
+    } finally {
+      _isStreaming = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> sendMessageBatch(String text) async {
     if (!_isModelLoaded || text.trim().isEmpty) return;
 
     // Add user message

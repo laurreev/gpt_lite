@@ -93,19 +93,86 @@ class LlamaCppPlugin : FlutterPlugin, MethodCallHandler {
                     result.error("INVALID_ARGUMENT", "Model ID is required", null)
                 }
             }
+            "startStreaming" -> {
+                val contextId = call.argument<Any>("contextId")?.let {
+                    when (it) {
+                        is Int -> it.toLong()
+                        is Long -> it
+                        else -> null
+                    }
+                }
+                val inputText = call.argument<String>("inputText")
+                val maxTokens = call.argument<Int>("maxTokens") ?: 20
+                
+                if (contextId != null && inputText != null) {
+                    val success = startStreaming(contextId, inputText, maxTokens)
+                    result.success(success)
+                } else {
+                    result.error("INVALID_ARGUMENT", "Context ID and input text are required", null)
+                }
+            }
+            "getNextStreamingToken" -> {
+                val contextId = call.argument<Any>("contextId")?.let {
+                    when (it) {
+                        is Int -> it.toLong()
+                        is Long -> it
+                        else -> null
+                    }
+                }
+                if (contextId != null) {
+                    val token = getNextStreamingToken(contextId)
+                    result.success(token)
+                } else {
+                    result.error("INVALID_ARGUMENT", "Context ID is required", null)
+                }
+            }
+            "isStreamingComplete" -> {
+                val contextId = call.argument<Any>("contextId")?.let {
+                    when (it) {
+                        is Int -> it.toLong()
+                        is Long -> it
+                        else -> null
+                    }
+                }
+                if (contextId != null) {
+                    val isComplete = isStreamingComplete(contextId)
+                    result.success(isComplete)
+                } else {
+                    result.error("INVALID_ARGUMENT", "Context ID is required", null)
+                }
+            }
+            "stopStreaming" -> {
+                val contextId = call.argument<Any>("contextId")?.let {
+                    when (it) {
+                        is Int -> it.toLong()
+                        is Long -> it
+                        else -> null
+                    }
+                }
+                if (contextId != null) {
+                    stopStreaming(contextId)
+                    result.success(null)
+                } else {
+                    result.error("INVALID_ARGUMENT", "Context ID is required", null)
+                }
+            }
             else -> {
                 result.notImplemented()
             }
         }
+    }    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        channel.setMethodCallHandler(null)
     }
 
-    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        channel.setMethodCallHandler(null)
-    }    // Native method declarations
+    // Native method declarations
     external fun initBackend()
     external fun loadModel(modelPath: String): Long
     external fun createContext(modelId: Long): Long
     external fun generateText(contextId: Long, inputText: String, maxTokens: Int): String
+    external fun startStreaming(contextId: Long, inputText: String, maxTokens: Int): Boolean
+    external fun getNextStreamingToken(contextId: Long): String
+    external fun isStreamingComplete(contextId: Long): Boolean
+    external fun stopStreaming(contextId: Long)
     external fun freeContext(contextId: Long)
     external fun freeModel(modelId: Long)
 }
