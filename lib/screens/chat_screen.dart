@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:file_picker/file_picker.dart';
 import '../providers/chat_provider.dart';
 import '../widgets/message_bubble.dart';
+import 'model_selection_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -32,82 +31,7 @@ class _ChatScreenState extends State<ChatScreen> {
           curve: Curves.easeOut,
         );
       }
-    });  }
-
-  // Test method to bypass file picker issues
-  Future<void> _loadTestModel(ChatProvider chatProvider) async {
-    // Simulate loading the TinyLlama model from a known path
-    const testModelPath = '/sdcard/Download/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf';
-    
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Loading TinyLlama model for testing...'),
-          backgroundColor: Colors.blue,
-        ),
-      );
-    }
-    
-    final success = await chatProvider.initializeModel(testModelPath);
-    
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(success 
-            ? 'TinyLlama model loaded successfully!' 
-            : 'Model loading simulation completed (stub mode)'),
-          backgroundColor: success ? Colors.green : Colors.orange,
-        ),
-      );
-    }
-  }
-
-  Future<void> _pickAndLoadModel(ChatProvider chatProvider) async {
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['gguf', 'bin'],
-        dialogTitle: 'Select GGUF Model File',
-      );
-
-      if (result != null && result.files.single.path != null) {
-        final modelPath = result.files.single.path!;
-        final success = await chatProvider.initializeModel(modelPath);
-        
-        if (!success && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Failed to load model. Please try again with a valid GGUF file.'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      }
-    } on PlatformException catch (e) {
-      if (mounted) {
-        String message = 'File picker error: ${e.message}';
-        if (e.code == 'unknown_path') {
-          message = 'Android storage access issue. Try the "Test with TinyLlama" option instead.';
-        }
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(message),
-            backgroundColor: Colors.orange,
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Unexpected error: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
+    });
   }
 
   void _sendMessage(ChatProvider chatProvider) {
@@ -119,18 +43,24 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  void _goBackToModelSelection() {
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) => const ModelSelectionScreen(),
+      ),
+    );
+  }
   @override
   Widget build(BuildContext context) {
-    return Scaffold(      appBar: AppBar(
+    return Scaffold(
+      appBar: AppBar(
         title: Consumer<ChatProvider>(
           builder: (context, chatProvider, child) {
             String title = 'GPT Lite';
             if (chatProvider.isStreaming) {
-              title += ' • Streaming...';
+              title += ' • ${chatProvider.tokensPerSecond} tok/s';
             } else if (chatProvider.isModelLoaded) {
-              title += ' • Ready';
-            } else if (chatProvider.isInitializing) {
-              title += ' • Loading...';
+              title += ' • Ready (${chatProvider.totalTokensGenerated} tokens)';
             }
             return Text(title);
           },
@@ -140,36 +70,25 @@ class _ChatScreenState extends State<ChatScreen> {
         actions: [
           Consumer<ChatProvider>(
             builder: (context, chatProvider, child) {
-              return PopupMenuButton<String>(                onSelected: (value) {
+              return PopupMenuButton<String>(
+                onSelected: (value) {
                   switch (value) {
-                    case 'load_model':
-                      _pickAndLoadModel(chatProvider);
-                      break;
-                    case 'test_model':
-                      _loadTestModel(chatProvider);
+                    case 'change_model':
+                      _goBackToModelSelection();
                       break;
                     case 'clear_chat':
                       chatProvider.clearChat();
                       break;
                   }
                 },
-                itemBuilder: (context) => [                  const PopupMenuItem(
-                    value: 'load_model',
-                    child: Row(
-                      children: [
-                        Icon(Icons.folder_open),
-                        SizedBox(width: 8),
-                        Text('Load Model'),
-                      ],
-                    ),
-                  ),
+                itemBuilder: (context) => [
                   const PopupMenuItem(
-                    value: 'test_model',
+                    value: 'change_model',
                     child: Row(
                       children: [
-                        Icon(Icons.science),
+                        Icon(Icons.swap_horiz),
                         SizedBox(width: 8),
-                        Text('Test with TinyLlama'),
+                        Text('Change Model'),
                       ],
                     ),
                   ),
@@ -192,12 +111,11 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Consumer<ChatProvider>(
         builder: (context, chatProvider, child) {
-          if (!chatProvider.isModelLoaded && !chatProvider.isInitializing) {
-            return _buildWelcomeScreen(chatProvider);
-          }
-
-          if (chatProvider.isInitializing) {
-            return _buildLoadingScreen();
+          // Chat screen only shows when model is loaded
+          if (!chatProvider.isModelLoaded) {
+            return const Center(
+              child: CircularProgressIndicator(),
+            );
           }
 
           return Column(
@@ -213,92 +131,32 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
-
-  Widget _buildWelcomeScreen(ChatProvider chatProvider) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.smart_toy,
-              size: 80,
-              color: Theme.of(context).primaryColor,
-            ),
-            const SizedBox(height: 24),
-            const Text(
-              'Welcome to GPT Lite',
-              style: TextStyle(
-                fontSize: 28,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'An offline AI chat application powered by llama.cpp',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 16,
-                color: Colors.grey,
-              ),
-            ),
-            const SizedBox(height: 32),
-            ElevatedButton.icon(
-              onPressed: () => _pickAndLoadModel(chatProvider),
-              icon: const Icon(Icons.folder_open),
-              label: const Text('Load Model File'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Please select a GGUF model file to get started',
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLoadingScreen() {
-    return const Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          CircularProgressIndicator(),
-          SizedBox(height: 16),
-          Text(
-            'Loading model...',
-            style: TextStyle(fontSize: 16),
-          ),
-          SizedBox(height: 8),
-          Text(
-            'This may take a few moments',
-            style: TextStyle(fontSize: 14, color: Colors.grey),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildModelInfo(ChatProvider chatProvider) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(8),
       color: Colors.green.shade50,
-      child: Text(
-        'Model loaded: ${chatProvider.modelPath.split('/').last}',
-        style: const TextStyle(
-          fontSize: 12,
-          color: Colors.green,
-        ),
-        textAlign: TextAlign.center,
+      child: Column(
+        children: [
+          Text(
+            'Model: ${chatProvider.modelPath.split('/').last}',
+            style: const TextStyle(
+              fontSize: 12,
+              color: Colors.green,
+              fontWeight: FontWeight.bold,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          if (chatProvider.isStreaming || chatProvider.totalTokensGenerated > 0)
+            Text(
+              '⚡ ${chatProvider.tokensPerSecond} tok/s • 📊 ${chatProvider.totalTokensGenerated} total',
+              style: const TextStyle(
+                fontSize: 10,
+                color: Colors.green,
+              ),
+              textAlign: TextAlign.center,
+            ),
+        ],
       ),
     );
   }
@@ -353,7 +211,8 @@ class _ChatScreenState extends State<ChatScreen> {
               onSubmitted: (_) => _sendMessage(chatProvider),
             ),
           ),
-          const SizedBox(width: 8),          IconButton(
+          const SizedBox(width: 8),
+          IconButton(
             onPressed: (chatProvider.isModelLoaded && !chatProvider.isStreaming)
                 ? () => _sendMessage(chatProvider) 
                 : null,

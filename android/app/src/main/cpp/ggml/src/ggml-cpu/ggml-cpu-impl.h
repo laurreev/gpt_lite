@@ -126,6 +126,8 @@ inline static float vmaxvq_f32(float32x4_t v) {
             MAX(vgetq_lane_f32(v, 2), vgetq_lane_f32(v, 3)));
 }
 
+// Only define vcvtnq_s32_f32 if it's not already available and custom NEON functions are not disabled
+#if !defined(__ARM_NEON) && !defined(GGML_DISABLE_CUSTOM_NEON_FUNCS)
 inline static int32x4_t vcvtnq_s32_f32(float32x4_t v) {
     int32x4_t res;
 
@@ -136,6 +138,7 @@ inline static int32x4_t vcvtnq_s32_f32(float32x4_t v) {
 
     return res;
 }
+#endif
 
 inline static uint8x8_t vzip1_u8(uint8x8_t a, uint8x8_t b) {
     uint8x8_t res;

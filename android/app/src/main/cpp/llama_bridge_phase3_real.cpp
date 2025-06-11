@@ -56,12 +56,27 @@ struct RealTensorModel {
                         tensor_data_size(0) {}
                   
     ~RealTensorModel() {
+        cleanup();
+    }
+    
+    void cleanup() {
         if (gguf_ctx) {
             gguf_free(gguf_ctx);
+            gguf_ctx = nullptr;
         }
         if (ggml_ctx) {
             ggml_free(ggml_ctx);
+            ggml_ctx = nullptr;
         }
+        tensors.clear();
+        tensor_types.clear();
+        vocab.clear();
+        token_to_id.clear();
+        id_to_token.clear();
+        tensor_data.reset();
+        tensor_data_size = 0;
+        loaded = false;
+        LOGI("Model cleanup completed");
     }
 };
 
@@ -92,9 +107,34 @@ struct RealInferenceContext {
                              max_tokens_to_generate(0), tokens_generated(0) {}
                              
     ~RealInferenceContext() {
+        cleanup();
+    }
+    
+    void cleanup() {
         if (work_ctx) {
             ggml_free(work_ctx);
+            work_ctx = nullptr;
         }
+        work_buffer.reset();
+        work_buffer_size = 0;
+        input_tokens.clear();
+        embeddings.clear();
+        logits.clear();
+        generated_tokens.clear();
+        full_context_tokens.clear();
+        is_streaming = false;
+        initialized = false;
+        LOGI("Context cleanup completed");
+    }
+    
+    // Memory monitoring
+    size_t getMemoryUsage() const {
+        return work_buffer_size + 
+               (input_tokens.size() * sizeof(int)) +
+               (embeddings.size() * sizeof(float)) +
+               (logits.size() * sizeof(float)) +
+               (generated_tokens.size() * sizeof(int)) +
+               (full_context_tokens.size() * sizeof(int));
     }
 };
 
@@ -114,6 +154,13 @@ std::string generateNextStreamingToken(RealInferenceContext* context);
 bool isStreamingComplete(RealInferenceContext* context);
 std::string generateResponsePhase3Original(const std::string& input, RealInferenceContext* context);
 std::string generateResponsePhase3Streaming(const std::string& input, RealInferenceContext* context, bool use_streaming);
+
+// Memory management functions
+size_t getTotalMemoryUsage();
+void logMemoryStats();
+bool checkMemoryHealth();
+void forceMemoryCleanup();
+bool recoverFromMemoryError();
 
 // Global storage
 static std::map<int64_t, RealTensorModel*> models;
@@ -496,12 +543,11 @@ std::vector<float> forwardPass(const std::vector<int>& tokens,
         }
         
         // Add bias to make common tokens more likely
-        if (i < 100) { // First 100 tokens are more common
+        if (i < 100) // First 100 tokens are more common
             logit += 0.5f;
-        }
         
         // Add small random component
-        logit += ((float)rand() / RAND_MAX - 0.5f) * 0.2f;
+        logit += ((float)rand() / (float)RAND_MAX - 0.5f) * 0.2f;
         
         logits[i] = logit;
     }
@@ -806,7 +852,7 @@ std::string generateNextStreamingToken(RealInferenceContext* context) {
         std::sort(top_tokens.begin(), top_tokens.end(), std::greater<>());
         
         // Sample from top-k
-        float random_val = (float)rand() / RAND_MAX;
+        float random_val = (float)rand() / (float)RAND_MAX;
         float cumulative = 0.0f;
         
         for (int i = 0; i < top_k && i < top_tokens.size(); i++) {
@@ -965,6 +1011,148 @@ std::string generateResponsePhase3Original(const std::string& input, RealInferen
     return response;
 }
 
+// Memory management implementations
+size_t getTotalMemoryUsage() {
+    size_t total = 0;
+    for (const auto& pair : models) {
+        if (pair.second) {
+            total += pair.second->tensor_data_size;
+        }
+    }
+    for (const auto& pair : contexts) {
+        if (pair.second) {
+            total += pair.second->getMemoryUsage();
+        }
+    }
+    return total;
+}
+
+void logMemoryStats() {
+    size_t total_memory = getTotalMemoryUsage();
+    LOGI("Memory Statistics:");
+    LOGI("  Total memory usage: %zu bytes (%.2f MB)", total_memory, total_memory / (1024.0 * 1024.0));
+    LOGI("  Active models: %zu", models.size());
+    LOGI("  Active contexts: %zu", contexts.size());
+    
+    for (const auto& pair : models) {
+        if (pair.second && pair.second->loaded) {
+            LOGI("  Model[%lld]: %zu bytes, %zu tensors", 
+                 (long long)pair.first, pair.second->tensor_data_size, pair.second->tensors.size());
+        }
+    }
+}
+
+bool checkMemoryHealth() {
+    const size_t MAX_MEMORY_LIMIT = 512 * 1024 * 1024; // 512MB limit for mobile
+    size_t current_usage = getTotalMemoryUsage();
+    
+    if (current_usage > MAX_MEMORY_LIMIT) {
+        LOGE("Memory usage exceeded limit: %zu bytes > %zu bytes", current_usage, MAX_MEMORY_LIMIT);
+        return false;
+    }
+    
+    // Check for memory fragmentation or corruption
+    for (const auto& pair : models) {
+        if (pair.second && pair.second->loaded) {
+            if (!pair.second->ggml_ctx || !pair.second->tensor_data) {
+                LOGE("Model[%lld] has corrupted memory", (long long)pair.first);
+                return false;
+            }
+        }
+    }
+    
+    return true;
+}
+
+void forceMemoryCleanup() {
+    LOGI("Starting emergency memory cleanup...");
+    
+    // Clean up unused contexts first
+    auto ctx_it = contexts.begin();
+    while (ctx_it != contexts.end()) {
+        if (ctx_it->second && !ctx_it->second->is_streaming) {
+            LOGI("Cleaning up idle context[%lld]", (long long)ctx_it->first);
+            ctx_it->second->cleanup();
+            delete ctx_it->second;
+            ctx_it = contexts.erase(ctx_it);
+        } else {
+            ++ctx_it;
+        }
+    }
+    
+    // Force garbage collection on remaining contexts
+    for (const auto& pair : contexts) {
+        if (pair.second) {
+            // Clear large vectors but keep essential data
+            pair.second->embeddings.clear();
+            pair.second->logits.clear();
+            if (pair.second->full_context_tokens.size() > 1024) {
+                // Keep only recent context
+                std::vector<int> recent_tokens(
+                    pair.second->full_context_tokens.end() - 512,
+                    pair.second->full_context_tokens.end()
+                );
+                pair.second->full_context_tokens = recent_tokens;
+            }
+        }
+    }
+    
+    logMemoryStats();
+    LOGI("Emergency memory cleanup completed");
+}
+
+bool recoverFromMemoryError() {
+    LOGI("Attempting memory error recovery...");
+    
+    // Step 1: Force cleanup
+    forceMemoryCleanup();
+    
+    // Step 2: Check if recovery was successful
+    if (checkMemoryHealth()) {
+        LOGI("Memory error recovery successful");
+        return true;
+    }
+    
+    // Step 3: Last resort - clean up everything except the most recent model
+    LOGE("Severe memory error - performing aggressive cleanup");
+    
+    // Find the most recently used model
+    int64_t most_recent_model = 0;
+    for (const auto& pair : models) {
+        if (pair.first > most_recent_model) {
+            most_recent_model = pair.first;
+        }
+    }
+    
+    // Clean up all models except the most recent
+    auto model_it = models.begin();
+    while (model_it != models.end()) {
+        if (model_it->first != most_recent_model) {
+            LOGI("Emergency cleanup of model[%lld]", (long long)model_it->first);
+            if (model_it->second) {
+                model_it->second->cleanup();
+                delete model_it->second;
+            }
+            model_it = models.erase(model_it);
+        } else {
+            ++model_it;
+        }
+    }
+    
+    // Clean up all contexts
+    for (const auto& pair : contexts) {
+        if (pair.second) {
+            pair.second->cleanup();
+            delete pair.second;
+        }
+    }
+    contexts.clear();
+    
+    bool recovery_success = checkMemoryHealth();
+    LOGI("Aggressive recovery %s", recovery_success ? "successful" : "failed");
+    return recovery_success;
+}
+
 extern "C" {
 
 JNIEXPORT void JNICALL
@@ -979,179 +1167,741 @@ Java_com_example_gpt_1lite_LlamaCppPlugin_initBackend(JNIEnv *env, jobject /* th
 
 JNIEXPORT jlong JNICALL
 Java_com_example_gpt_1lite_LlamaCppPlugin_loadModel(JNIEnv *env, jobject /* this */, jstring model_path) {
-    const char *path = env->GetStringUTFChars(model_path, 0);
-    LOGI("Phase 3: Loading model with real tensor data: %s", path);
+    const char *path = nullptr;
+    RealTensorModel* model = nullptr;
     
-    // Create real tensor model
-    RealTensorModel* model = new RealTensorModel();
-    model->path = std::string(path);
-    
-    // Get file size
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) {
-        LOGE("Cannot open model file: %s", path);
-        delete model;
+    try {
+        // Check memory health before loading
+        if (!checkMemoryHealth()) {
+            LOGE("Memory health check failed before loading model");
+            if (!recoverFromMemoryError()) {
+                LOGE("Failed to recover from memory error");
+                return 0;
+            }
+        }
+        
+        path = env->GetStringUTFChars(model_path, 0);
+        if (!path) {
+            LOGE("Failed to get model path string");
+            return 0;
+        }
+        
+        LOGI("Phase 3: Loading model with real tensor data: %s", path);
+        
+        // Create real tensor model with error checking
+        model = new RealTensorModel();
+        if (!model) {
+            LOGE("Failed to allocate memory for model");
+            env->ReleaseStringUTFChars(model_path, path);
+            return 0;
+        }
+        
+        model->path = std::string(path);
+        
+        // Get file size with error handling
+        std::ifstream file(path, std::ios::binary);
+        if (!file.is_open()) {
+            LOGE("Cannot open model file: %s", path);
+            delete model;
+            env->ReleaseStringUTFChars(model_path, path);
+            return 0;
+        }
+        
+        file.seekg(0, std::ios::end);
+        if (file.fail()) {
+            LOGE("Failed to seek to end of file: %s", path);
+            file.close();
+            delete model;
+            env->ReleaseStringUTFChars(model_path, path);
+            return 0;
+        }
+        
+        model->file_size = file.tellg();
+        file.close();
+        
+        if (model->file_size <= 0) {
+            LOGE("Invalid file size: %zu", model->file_size);
+            delete model;
+            env->ReleaseStringUTFChars(model_path, path);
+            return 0;
+        }
+        
+        // Check if we have enough memory for this model
+        const size_t MAX_MODEL_SIZE = 1024 * 1024 * 1024; // 1GB limit for practical models
+        if (model->file_size > MAX_MODEL_SIZE) {
+            LOGE("Model file too large: %zu bytes > %zu bytes", model->file_size, MAX_MODEL_SIZE);
+            delete model;
+            env->ReleaseStringUTFChars(model_path, path);
+            return 0;
+        }
+        
+        // Load real tensor model with recovery on failure
+        if (!loadRealTensorModel(model)) {
+            LOGE("Failed to load real tensor model, attempting memory recovery");
+            delete model;
+            
+            // Try to recover from memory error and retry once
+            if (recoverFromMemoryError()) {
+                LOGI("Memory recovered, retrying model load");
+                model = new RealTensorModel();
+                model->path = std::string(path);
+                model->file_size = file.tellg();
+                
+                if (!loadRealTensorModel(model)) {
+                    LOGE("Failed to load model even after memory recovery");
+                    delete model;
+                    env->ReleaseStringUTFChars(model_path, path);
+                    return 0;
+                }
+            } else {
+                LOGE("Memory recovery failed");
+                env->ReleaseStringUTFChars(model_path, path);
+                return 0;
+            }
+        }
+        
+        // Validate model was loaded correctly
+        if (!model->loaded || model->tensors.empty()) {
+            LOGE("Model loaded but validation failed");
+            delete model;
+            env->ReleaseStringUTFChars(model_path, path);
+            return 0;
+        }
+        
+        int64_t model_id = next_id++;
+        models[model_id] = model;
+        
         env->ReleaseStringUTFChars(model_path, path);
+        
+        // Final memory health check
+        logMemoryStats();
+        
+        LOGI("Phase 3 model loaded successfully with ID: %" PRId64 " (%zu bytes, %zu tensors, %zu vocab)", 
+             model_id, model->file_size, model->tensors.size(), model->vocab.size());
+        return model_id;
+        
+    } catch (const std::exception& e) {
+        LOGE("Exception during model loading: %s", e.what());
+        if (model) delete model;
+        if (path) env->ReleaseStringUTFChars(model_path, path);
+        recoverFromMemoryError();
+        return 0;
+    } catch (...) {
+        LOGE("Unknown exception during model loading");
+        if (model) delete model;
+        if (path) env->ReleaseStringUTFChars(model_path, path);
+        recoverFromMemoryError();
         return 0;
     }
-    
-    file.seekg(0, std::ios::end);
-    model->file_size = file.tellg();
-    file.close();
-    
-    // Load real tensor model
-    if (!loadRealTensorModel(model)) {
-        LOGE("Failed to load real tensor model");
-        delete model;
-        env->ReleaseStringUTFChars(model_path, path);
-        return 0;
-    }
-    
-    int64_t model_id = next_id++;
-    models[model_id] = model;
-    
-    env->ReleaseStringUTFChars(model_path, path);
-    
-    LOGI("Phase 3 model loaded successfully with ID: %" PRId64 " (%zu bytes, %zu tensors, %zu vocab)", 
-         model_id, model->file_size, model->tensors.size(), model->vocab.size());
-    return model_id;
 }
 
 JNIEXPORT jlong JNICALL
 Java_com_example_gpt_1lite_LlamaCppPlugin_createContext(JNIEnv *env, jobject /* this */, jlong model_id) {
-    if (models.find(model_id) == models.end()) {
-        LOGE("Model ID %" PRId64 " not found", model_id);
+    RealInferenceContext* context = nullptr;
+    
+    try {
+        // Validate model ID
+        if (models.find(model_id) == models.end()) {
+            LOGE("Model ID %" PRId64 " not found", model_id);
+            return 0;
+        }
+        
+        RealTensorModel* model = models[model_id];
+        if (!model || !model->loaded) {
+            LOGE("Model ID %" PRId64 " is invalid or not loaded", model_id);
+            return 0;
+        }
+        
+        // Check memory health before creating context
+        if (!checkMemoryHealth()) {
+            LOGE("Memory health check failed before creating context");
+            if (!recoverFromMemoryError()) {
+                LOGE("Failed to recover from memory error");
+                return 0;
+            }
+        }
+        
+        context = new RealInferenceContext();
+        if (!context) {
+            LOGE("Failed to allocate memory for context");
+            return 0;
+        }
+        
+        context->model = model;
+        context->ctx_size = (int)context->model->n_ctx;
+        
+        // Allocate working memory for inference (smaller for mobile)
+        context->work_buffer_size = 16 * 1024 * 1024; // 16MB working memory
+        
+        // Check if we have enough memory
+        size_t current_memory = getTotalMemoryUsage();
+        const size_t MAX_TOTAL_MEMORY = 512 * 1024 * 1024; // 512MB total limit
+        
+        if (current_memory + context->work_buffer_size > MAX_TOTAL_MEMORY) {
+            LOGE("Not enough memory for context: current=%zu, need=%zu, limit=%zu", 
+                 current_memory, context->work_buffer_size, MAX_TOTAL_MEMORY);
+            
+            // Try to free some memory
+            forceMemoryCleanup();
+            current_memory = getTotalMemoryUsage();
+            
+            if (current_memory + context->work_buffer_size > MAX_TOTAL_MEMORY) {
+                LOGE("Still not enough memory after cleanup");
+                delete context;
+                return 0;
+            }
+        }
+        
+        context->work_buffer = std::make_unique<uint8_t[]>(context->work_buffer_size);
+        if (!context->work_buffer) {
+            LOGE("Failed to allocate working buffer");
+            delete context;
+            return 0;
+        }
+        
+        struct ggml_init_params work_params = {
+            .mem_size = context->work_buffer_size,
+            .mem_buffer = context->work_buffer.get(),
+            .no_alloc = false
+        };
+        
+        context->work_ctx = ggml_init(work_params);
+        if (!context->work_ctx) {
+            LOGE("Failed to create working context, attempting recovery");
+            
+            // Try to recover and retry once
+            forceMemoryCleanup();
+            context->work_ctx = ggml_init(work_params);
+            
+            if (!context->work_ctx) {
+                LOGE("Failed to create working context even after recovery");
+                delete context;
+                return 0;
+            }
+        }
+        
+        context->initialized = true;
+        
+        int64_t context_id = next_id++;
+        contexts[context_id] = context;
+        
+        // Final memory check
+        logMemoryStats();
+        
+        LOGI("Phase 3 context created with ID: %" PRId64 " (Context size: %d, Work memory: %zu MB)", 
+             context_id, context->ctx_size, context->work_buffer_size / (1024 * 1024));
+        return context_id;
+        
+    } catch (const std::exception& e) {
+        LOGE("Exception during context creation: %s", e.what());
+        if (context) delete context;
+        recoverFromMemoryError();
+        return 0;
+    } catch (...) {
+        LOGE("Unknown exception during context creation");
+        if (context) delete context;
+        recoverFromMemoryError();
         return 0;
     }
-    
-    RealInferenceContext* context = new RealInferenceContext();
-    context->model = models[model_id];
-    context->ctx_size = (int)context->model->n_ctx;
-      // Allocate working memory for inference (smaller for mobile)
-    context->work_buffer_size = 16 * 1024 * 1024; // 16MB working memory
-    context->work_buffer = std::make_unique<uint8_t[]>(context->work_buffer_size);
-    
-    struct ggml_init_params work_params = {
-        .mem_size = context->work_buffer_size,
-        .mem_buffer = context->work_buffer.get(),
-        .no_alloc = false
-    };
-    
-    context->work_ctx = ggml_init(work_params);
-    if (!context->work_ctx) {
-        LOGE("Failed to create working context");
-        delete context;
-        return 0;
-    }
-    
-    context->initialized = true;
-    
-    int64_t context_id = next_id++;
-    contexts[context_id] = context;
-    
-    LOGI("Phase 3 context created with ID: %" PRId64 " (Context size: %d, Work memory: %zu MB)", 
-         context_id, context->ctx_size, context->work_buffer_size / (1024 * 1024));
-    return context_id;
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_example_gpt_1lite_LlamaCppPlugin_generateText(JNIEnv *env, jobject /* this */, 
                                                        jlong context_id, jstring input_text, jint max_tokens) {
-    if (contexts.find(context_id) == contexts.end()) {
-        LOGE("Context ID %" PRId64 " not found", context_id);
-        return env->NewStringUTF("");
+    const char *input = nullptr;
+    
+    try {
+        // Validate context
+        if (contexts.find(context_id) == contexts.end()) {
+            LOGE("Context ID %" PRId64 " not found", context_id);
+            return env->NewStringUTF("");
+        }
+        
+        RealInferenceContext *ctx = contexts[context_id];
+        if (!ctx || !ctx->initialized || !ctx->model) {
+            LOGE("Context ID %" PRId64 " is invalid or not initialized", context_id);
+            return env->NewStringUTF("");
+        }
+        
+        // Validate model
+        if (!ctx->model->loaded) {
+            LOGE("Model for context %" PRId64 " is not loaded", context_id);
+            return env->NewStringUTF("");
+        }
+        
+        // Check memory health before generation
+        if (!checkMemoryHealth()) {
+            LOGE("Memory health check failed before text generation");
+            if (!recoverFromMemoryError()) {
+                LOGE("Failed to recover from memory error");
+                return env->NewStringUTF("Error: Memory recovery failed");
+            }
+        }
+        
+        input = env->GetStringUTFChars(input_text, 0);
+        if (!input) {
+            LOGE("Failed to get input text string");
+            return env->NewStringUTF("");
+        }
+        
+        // Validate input parameters
+        if (max_tokens <= 0 || max_tokens > 2048) {
+            LOGE("Invalid max_tokens: %d", max_tokens);
+            env->ReleaseStringUTFChars(input_text, input);
+            return env->NewStringUTF("");
+        }
+        
+        size_t input_len = strlen(input);
+        if (input_len == 0) {
+            LOGE("Empty input text");
+            env->ReleaseStringUTFChars(input_text, input);
+            return env->NewStringUTF("");
+        }
+        
+        if (input_len > 8192) { // 8KB input limit
+            LOGE("Input text too long: %zu characters", input_len);
+            env->ReleaseStringUTFChars(input_text, input);
+            return env->NewStringUTF("Error: Input text too long");
+        }
+        
+        LOGI("Phase 3 generating text with real neural network (Model: %s)", ctx->model->path.c_str());
+        LOGI("Model specs: %" PRId64 " layers, %" PRId64 " heads, %" PRId64 " embd, %zu tensors", 
+             ctx->model->n_layer, ctx->model->n_head, ctx->model->n_embd, ctx->model->tensors.size());
+        LOGI("Input: %.100s...", input);
+        
+        // Generate response using Phase 3 real neural network with error handling
+        std::string response;
+        try {
+            response = generateResponsePhase3Streaming(std::string(input), ctx, true);
+        } catch (const std::exception& e) {
+            LOGE("Exception during text generation: %s", e.what());
+            env->ReleaseStringUTFChars(input_text, input);
+            
+            // Try to recover and generate a basic response
+            if (recoverFromMemoryError()) {
+                response = "I apologize, but I encountered an error during processing. Please try again.";
+            } else {
+                response = "Error: Unable to generate response due to system issues.";
+            }
+            return env->NewStringUTF(response.c_str());
+        } catch (...) {
+            LOGE("Unknown exception during text generation");
+            env->ReleaseStringUTFChars(input_text, input);
+            response = "Error: Unknown system error occurred.";
+            recoverFromMemoryError();
+            return env->NewStringUTF(response.c_str());
+        }
+        
+        env->ReleaseStringUTFChars(input_text, input);
+        
+        // Validate response
+        if (response.empty()) {
+            LOGE("Generated empty response");
+            response = "I apologize, but I couldn't generate a proper response. Please try again.";
+        }
+        
+        // Truncate response if too long
+        if (response.length() > 4096) {
+            response = response.substr(0, 4093) + "...";
+        }
+        
+        LOGI("Phase 3 generated response: %.100s...", response.c_str());
+        return env->NewStringUTF(response.c_str());
+        
+    } catch (const std::exception& e) {
+        LOGE("Exception in generateText JNI: %s", e.what());
+        if (input) env->ReleaseStringUTFChars(input_text, input);
+        recoverFromMemoryError();
+        return env->NewStringUTF("Error: System exception occurred");
+    } catch (...) {
+        LOGE("Unknown exception in generateText JNI");
+        if (input) env->ReleaseStringUTFChars(input_text, input);
+        recoverFromMemoryError();
+        return env->NewStringUTF("Error: Unknown system error");
     }
-    
-    const char *input = env->GetStringUTFChars(input_text, 0);
-    RealInferenceContext *ctx = contexts[context_id];
-    
-    LOGI("Phase 3 generating text with real neural network (Model: %s)", ctx->model->path.c_str());
-    LOGI("Model specs: %" PRId64 " layers, %" PRId64 " heads, %" PRId64 " embd, %zu tensors", 
-         ctx->model->n_layer, ctx->model->n_head, ctx->model->n_embd, ctx->model->tensors.size());
-    LOGI("Input: %.100s...", input);
-    
-    // Generate response using Phase 3 real neural network
-    std::string response = generateResponsePhase3Streaming(std::string(input), ctx, true);
-    
-    env->ReleaseStringUTFChars(input_text, input);
-    
-    LOGI("Phase 3 generated response: %.100s...", response.c_str());
-    return env->NewStringUTF(response.c_str());
 }
 
 JNIEXPORT void JNICALL
 Java_com_example_gpt_1lite_LlamaCppPlugin_freeContext(JNIEnv *env, jobject /* this */, jlong context_id) {
-    auto it = contexts.find(context_id);
-    if (it != contexts.end()) {
-        delete it->second;
-        contexts.erase(it);
-        LOGI("Freed Phase 3 context with ID: %" PRId64, context_id);
+    try {
+        auto it = contexts.find(context_id);
+        if (it != contexts.end()) {
+            RealInferenceContext* ctx = it->second;
+            if (ctx) {
+                // Stop streaming if active
+                if (ctx->is_streaming) {
+                    ctx->is_streaming = false;
+                    LOGI("Stopped streaming for context %" PRId64 " during cleanup", context_id);
+                }
+                
+                // Clean up context
+                ctx->cleanup();
+                delete ctx;
+            }
+            contexts.erase(it);
+            LOGI("Freed Phase 3 context with ID: %" PRId64, context_id);
+        } else {
+            LOGE("Context ID %" PRId64 " not found for cleanup", context_id);
+        }
+        
+        // Log memory stats after cleanup
+        logMemoryStats();
+        
+    } catch (const std::exception& e) {
+        LOGE("Exception during context cleanup: %s", e.what());
+        // Force cleanup in case of exception
+        auto it = contexts.find(context_id);
+        if (it != contexts.end()) {
+            contexts.erase(it);
+        }
+    } catch (...) {
+        LOGE("Unknown exception during context cleanup");
+        auto it = contexts.find(context_id);
+        if (it != contexts.end()) {
+            contexts.erase(it);
+        }
     }
 }
 
 JNIEXPORT void JNICALL
 Java_com_example_gpt_1lite_LlamaCppPlugin_freeModel(JNIEnv *env, jobject /* this */, jlong model_id) {
-    auto it = models.find(model_id);
-    if (it != models.end()) {
-        delete it->second;
-        models.erase(it);
-        LOGI("Freed Phase 3 model with ID: %" PRId64, model_id);
+    try {
+        auto it = models.find(model_id);
+        if (it != models.end()) {
+            RealTensorModel* model = it->second;
+            
+            // Check if any contexts are using this model
+            bool model_in_use = false;
+            for (const auto& ctx_pair : contexts) {
+                if (ctx_pair.second && ctx_pair.second->model == model) {
+                    LOGE("Cannot free model %" PRId64 " - still in use by context %" PRId64, 
+                         model_id, ctx_pair.first);
+                    model_in_use = true;
+                    break;
+                }
+            }
+            
+            if (model_in_use) {
+                LOGE("Model %" PRId64 " is still in use, cleanup postponed", model_id);
+                return;
+            }
+            
+            if (model) {
+                model->cleanup();
+                delete model;
+            }
+            models.erase(it);
+            LOGI("Freed Phase 3 model with ID: %" PRId64, model_id);
+        } else {
+            LOGE("Model ID %" PRId64 " not found for cleanup", model_id);
+        }
+        
+        // Log memory stats after cleanup
+        logMemoryStats();
+        
+    } catch (const std::exception& e) {
+        LOGE("Exception during model cleanup: %s", e.what());
+        // Force cleanup in case of exception
+        auto it = models.find(model_id);
+        if (it != models.end()) {
+            models.erase(it);
+        }
+    } catch (...) {
+        LOGE("Unknown exception during model cleanup");
+        auto it = models.find(model_id);
+        if (it != models.end()) {
+            models.erase(it);
+        }
     }
 }
 
 JNIEXPORT jboolean JNICALL
 Java_com_example_gpt_1lite_LlamaCppPlugin_startStreaming(JNIEnv *env, jobject /* this */, 
                                                          jlong context_id, jstring input_text, jint max_tokens) {
-    if (contexts.find(context_id) == contexts.end()) {
-        LOGE("Context ID %" PRId64 " not found", context_id);
+    const char *input = nullptr;
+    
+    try {
+        // Validate context
+        if (contexts.find(context_id) == contexts.end()) {
+            LOGE("Context ID %" PRId64 " not found", context_id);
+            return false;
+        }
+        
+        RealInferenceContext *ctx = contexts[context_id];
+        if (!ctx || !ctx->initialized || !ctx->model) {
+            LOGE("Context ID %" PRId64 " is invalid or not initialized", context_id);
+            return false;
+        }
+        
+        // Check if already streaming
+        if (ctx->is_streaming) {
+            LOGE("Context ID %" PRId64 " is already streaming", context_id);
+            return false;
+        }
+        
+        // Check memory health
+        if (!checkMemoryHealth()) {
+            LOGE("Memory health check failed before starting streaming");
+            if (!recoverFromMemoryError()) {
+                LOGE("Failed to recover from memory error");
+                return false;
+            }
+        }
+        
+        input = env->GetStringUTFChars(input_text, 0);
+        if (!input) {
+            LOGE("Failed to get input text string");
+            return false;
+        }
+        
+        // Validate parameters
+        if (max_tokens <= 0 || max_tokens > 2048) {
+            LOGE("Invalid max_tokens for streaming: %d", max_tokens);
+            env->ReleaseStringUTFChars(input_text, input);
+            return false;
+        }
+        
+        size_t input_len = strlen(input);
+        if (input_len == 0 || input_len > 8192) {
+            LOGE("Invalid input length for streaming: %zu", input_len);
+            env->ReleaseStringUTFChars(input_text, input);
+            return false;
+        }
+        
+        LOGI("Starting streaming for context %" PRId64 ": '%.100s...' (max_tokens: %d)", 
+             context_id, input, max_tokens);
+        
+        bool success = false;
+        try {
+            success = startStreamingInference(ctx, std::string(input), max_tokens);
+        } catch (const std::exception& e) {
+            LOGE("Exception during streaming start: %s", e.what());
+            ctx->is_streaming = false;
+            success = false;
+        } catch (...) {
+            LOGE("Unknown exception during streaming start");
+            ctx->is_streaming = false;
+            success = false;
+        }
+        
+        env->ReleaseStringUTFChars(input_text, input);
+        
+        if (!success) {
+            LOGE("Failed to start streaming, attempting recovery");
+            forceMemoryCleanup();
+        }
+        
+        return success;
+        
+    } catch (const std::exception& e) {
+        LOGE("Exception in startStreaming JNI: %s", e.what());
+        if (input) env->ReleaseStringUTFChars(input_text, input);
+        recoverFromMemoryError();
+        return false;
+    } catch (...) {
+        LOGE("Unknown exception in startStreaming JNI");
+        if (input) env->ReleaseStringUTFChars(input_text, input);
+        recoverFromMemoryError();
         return false;
     }
-    
-    const char *input = env->GetStringUTFChars(input_text, 0);
-    RealInferenceContext *ctx = contexts[context_id];
-    
-    LOGI("Starting streaming for context %" PRId64 ": '%s' (max_tokens: %d)", context_id, input, max_tokens);
-    
-    bool success = startStreamingInference(ctx, std::string(input), max_tokens);
-    
-    env->ReleaseStringUTFChars(input_text, input);
-    
-    return success;
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_example_gpt_1lite_LlamaCppPlugin_getNextStreamingToken(JNIEnv *env, jobject /* this */, jlong context_id) {
-    if (contexts.find(context_id) == contexts.end()) {
-        LOGE("Context ID %" PRId64 " not found", context_id);
+    try {
+        // Validate context
+        if (contexts.find(context_id) == contexts.end()) {
+            LOGE("Context ID %" PRId64 " not found", context_id);
+            return env->NewStringUTF("");
+        }
+        
+        RealInferenceContext *ctx = contexts[context_id];
+        if (!ctx || !ctx->initialized) {
+            LOGE("Context ID %" PRId64 " is invalid or not initialized", context_id);
+            return env->NewStringUTF("");
+        }
+        
+        // Check if streaming is active
+        if (!ctx->is_streaming) {
+            LOGE("Context ID %" PRId64 " is not streaming", context_id);
+            return env->NewStringUTF("");
+        }
+        
+        std::string next_token;
+        try {
+            next_token = generateNextStreamingToken(ctx);
+        } catch (const std::exception& e) {
+            LOGE("Exception during token generation: %s", e.what());
+            ctx->is_streaming = false; // Stop streaming on error
+            return env->NewStringUTF("");
+        } catch (...) {
+            LOGE("Unknown exception during token generation");
+            ctx->is_streaming = false; // Stop streaming on error
+            return env->NewStringUTF("");
+        }
+        
+        // Validate token
+        if (next_token.length() > 256) { // Reasonable token size limit
+            LOGE("Generated token too long: %zu characters", next_token.length());
+            next_token = next_token.substr(0, 256);
+        }
+        
+        return env->NewStringUTF(next_token.c_str());
+        
+    } catch (const std::exception& e) {
+        LOGE("Exception in getNextStreamingToken JNI: %s", e.what());
+        return env->NewStringUTF("");
+    } catch (...) {
+        LOGE("Unknown exception in getNextStreamingToken JNI");
         return env->NewStringUTF("");
     }
-    
-    RealInferenceContext *ctx = contexts[context_id];
-    std::string next_token = generateNextStreamingToken(ctx);
-    
-    return env->NewStringUTF(next_token.c_str());
 }
 
 JNIEXPORT jboolean JNICALL
 Java_com_example_gpt_1lite_LlamaCppPlugin_isStreamingComplete(JNIEnv *env, jobject /* this */, jlong context_id) {
-    if (contexts.find(context_id) == contexts.end()) {
-        LOGE("Context ID %" PRId64 " not found", context_id);
-        return true;
+    try {
+        if (contexts.find(context_id) == contexts.end()) {
+            LOGE("Context ID %" PRId64 " not found", context_id);
+            return true; // Consider complete if context doesn't exist
+        }
+        
+        RealInferenceContext *ctx = contexts[context_id];
+        if (!ctx || !ctx->initialized) {
+            LOGE("Context ID %" PRId64 " is invalid", context_id);
+            return true; // Consider complete if context is invalid
+        }
+        
+        return isStreamingComplete(ctx);
+        
+    } catch (const std::exception& e) {
+        LOGE("Exception in isStreamingComplete: %s", e.what());
+        return true; // Consider complete on error
+    } catch (...) {
+        LOGE("Unknown exception in isStreamingComplete");
+        return true; // Consider complete on error
     }
-    
-    RealInferenceContext *ctx = contexts[context_id];
-    return isStreamingComplete(ctx);
 }
 
 JNIEXPORT void JNICALL
 Java_com_example_gpt_1lite_LlamaCppPlugin_stopStreaming(JNIEnv *env, jobject /* this */, jlong context_id) {
-    if (contexts.find(context_id) == contexts.end()) {
-        LOGE("Context ID %" PRId64 " not found", context_id);
-        return;
+    try {
+        if (contexts.find(context_id) == contexts.end()) {
+            LOGE("Context ID %" PRId64 " not found", context_id);
+            return;
+        }
+        
+        RealInferenceContext *ctx = contexts[context_id];
+        if (!ctx) {
+            LOGE("Context ID %" PRId64 " is null", context_id);
+            return;
+        }
+        
+        ctx->is_streaming = false;
+        
+        // Clear streaming state to free memory
+        ctx->generated_tokens.clear();
+        ctx->embeddings.clear();
+        ctx->logits.clear();
+        
+        LOGI("Streaming stopped for context %" PRId64, context_id);
+        
+        // Log memory stats after stopping
+        logMemoryStats();
+        
+    } catch (const std::exception& e) {
+        LOGE("Exception during stopStreaming: %s", e.what());
+        // Force stop streaming even on error
+        auto it = contexts.find(context_id);
+        if (it != contexts.end() && it->second) {
+            it->second->is_streaming = false;
+        }
+    } catch (...) {
+        LOGE("Unknown exception during stopStreaming");
+        auto it = contexts.find(context_id);
+        if (it != contexts.end() && it->second) {
+            it->second->is_streaming = false;
+        }
     }
-    
-    RealInferenceContext *ctx = contexts[context_id];
-    ctx->is_streaming = false;
-    LOGI("Streaming stopped for context %" PRId64, context_id);
+}
+
+// Additional JNI functions for error recovery and monitoring
+JNIEXPORT jlong JNICALL
+Java_com_example_gpt_1lite_LlamaCppPlugin_getMemoryUsage(JNIEnv *env, jobject /* this */) {
+    try {
+        return (jlong)getTotalMemoryUsage();
+    } catch (const std::exception& e) {
+        LOGE("Exception getting memory usage: %s", e.what());
+        return -1;
+    } catch (...) {
+        LOGE("Unknown exception getting memory usage");
+        return -1;
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_example_gpt_1lite_LlamaCppPlugin_isMemoryHealthy(JNIEnv *env, jobject /* this */) {
+    try {
+        return checkMemoryHealth();
+    } catch (const std::exception& e) {
+        LOGE("Exception checking memory health: %s", e.what());
+        return false;
+    } catch (...) {
+        LOGE("Unknown exception checking memory health");
+        return false;
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_gpt_1lite_LlamaCppPlugin_forceCleanup(JNIEnv *env, jobject /* this */) {
+    try {
+        LOGI("Manual memory cleanup requested");
+        forceMemoryCleanup();
+    } catch (const std::exception& e) {
+        LOGE("Exception during manual cleanup: %s", e.what());
+    } catch (...) {
+        LOGE("Unknown exception during manual cleanup");
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_example_gpt_1lite_LlamaCppPlugin_recoverFromError(JNIEnv *env, jobject /* this */) {
+    try {
+        LOGI("Manual error recovery requested");
+        return recoverFromMemoryError();
+    } catch (const std::exception& e) {
+        LOGE("Exception during manual recovery: %s", e.what());
+        return false;
+    } catch (...) {
+        LOGE("Unknown exception during manual recovery");
+        return false;
+    }
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_gpt_1lite_LlamaCppPlugin_getSystemInfo(JNIEnv *env, jobject /* this */) {
+    try {
+        std::string info = "GPT Lite Phase 3 System Status:\n";
+        info += "- Backend initialized: " + std::string(backend_initialized ? "Yes" : "No") + "\n";
+        info += "- Active models: " + std::to_string(models.size()) + "\n";
+        info += "- Active contexts: " + std::to_string(contexts.size()) + "\n";
+        info += "- Memory usage: " + std::to_string(getTotalMemoryUsage() / (1024 * 1024)) + " MB\n";
+        info += "- Memory healthy: " + std::string(checkMemoryHealth() ? "Yes" : "No") + "\n";
+        
+        // Add model details
+        for (const auto& pair : models) {
+            if (pair.second && pair.second->loaded) {
+                info += "- Model[" + std::to_string(pair.first) + "]: " + pair.second->path + 
+                       " (" + std::to_string(pair.second->tensor_data_size / (1024 * 1024)) + " MB)\n";
+            }
+        }
+        
+        return env->NewStringUTF(info.c_str());
+    } catch (const std::exception& e) {
+        LOGE("Exception getting system info: %s", e.what());
+        return env->NewStringUTF("Error getting system info");
+    } catch (...) {
+        LOGE("Unknown exception getting system info");
+        return env->NewStringUTF("Unknown error getting system info");
+    }
 }
 } // extern "C"

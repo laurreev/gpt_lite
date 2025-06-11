@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'providers/chat_provider.dart';
-import 'screens/chat_screen.dart';
+import 'screens/model_selection_screen.dart';
 
 void main() {
   runApp(const MainApp());
@@ -19,7 +19,7 @@ class MainApp extends StatelessWidget {
           primarySwatch: Colors.blue,
           useMaterial3: true,
         ),
-        home: const ChatScreen(),
+        home: const ModelSelectionScreen(),
         debugShowCheckedModeBanner: false,
       ),
     );

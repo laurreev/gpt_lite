@@ -9,9 +9,32 @@ set(CMAKE_C_STANDARD 11)
 # Add compile definitions for CPU-only build
 add_definitions(-DGGML_USE_CALL_LOCAL)
 add_definitions(-DGGML_CPU_ONLY)
+add_definitions(-DGGML_DISABLE_CUSTOM_NEON_FUNCS)
+
+# Performance optimizations - mobile-friendly settings
+add_definitions(-DGGML_USE_OPENMP)
+add_definitions(-DNDEBUG)
+
+# ARM architecture detection and optimization
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm" OR CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+    add_definitions(-DGGML_USE_ACCELERATE)
+    # Conditional NEON support to avoid redefinition conflicts
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+        # Check for NEON availability without conflicting with GGML implementation
+        include(CheckCSourceCompiles)
+        check_c_source_compiles("
+            #include <arm_neon.h>
+            int main() { return 0; }
+        " HAVE_ARM_NEON)
+        if(HAVE_ARM_NEON)
+            add_definitions(-DGGML_ARM_NEON_AVAILABLE)
+        endif()
+    endif()
+endif()
 
 # Include directories
 include_directories(
+    .
     llama_cpp/
     ggml/include/
     ggml/src/
@@ -45,10 +68,40 @@ target_link_libraries(llama_cpp_flutter
     log
 )
 
-# Compiler flags for optimization and compatibility
-target_compile_options(llama_cpp_flutter PRIVATE
-    -O3
-    -ffast-math
-    -fno-finite-math-only
-    -funroll-loops
-)
+# Architecture-specific compiler flags
+if(ANDROID_ABI STREQUAL "armeabi-v7a")
+    target_compile_options(llama_cpp_flutter PRIVATE
+        -O3
+        -ffast-math
+        -fno-finite-math-only
+        -funroll-loops
+        -march=armv7-a
+        -mfpu=neon
+        -fopenmp
+        -Wno-implicit-int-float-conversion
+        -Wno-conversion
+    )
+elseif(ANDROID_ABI STREQUAL "arm64-v8a")
+    target_compile_options(llama_cpp_flutter PRIVATE
+        -O3
+        -ffast-math
+        -fno-finite-math-only
+        -funroll-loops
+        -march=armv8-a
+        -mtune=cortex-a76
+        -fopenmp
+        -Wno-implicit-int-float-conversion
+        -Wno-conversion
+    )
+else()
+    # Fallback for other architectures
+    target_compile_options(llama_cpp_flutter PRIVATE
+        -O3
+        -ffast-math
+        -fno-finite-math-only
+        -funroll-loops
+        -fopenmp
+        -Wno-implicit-int-float-conversion
+        -Wno-conversion
+    )
+endif()

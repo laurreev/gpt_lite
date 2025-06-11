@@ -22,8 +22,7 @@ class LlamaCppService {
       throw e;
     }
   }
-  
-  Future<bool> loadModel(String modelPath) async {
+    Future<bool> loadModel(String modelPath) async {
     await initBackend(); // Ensure backend is initialized
     
     try {
@@ -37,8 +36,15 @@ class LlamaCppService {
       }
       return false;
     } catch (e) {
-      print('Error loading model: $e');
-      return false;
+      print('Error loading model: $e');      // Check for specific error types
+      if (e.toString().contains('file too large') || e.toString().contains('Model file too large')) {
+        throw Exception('Model file is too large (max 1GB). Please check if the file is corrupted.');
+      } else if (e.toString().contains('Cannot open model file')) {
+        throw Exception('Cannot access model file. Please check the file path and permissions.');
+      } else if (e.toString().contains('Invalid format')) {
+        throw Exception('Invalid model format. Please use a valid GGUF file.');
+      }
+      throw Exception('Failed to load model: ${e.toString()}');
     }
   }
   
